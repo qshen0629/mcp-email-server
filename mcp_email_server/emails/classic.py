@@ -287,6 +287,54 @@ class EmailClient:
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
+    def _check_email_content(self, data: list) -> bool:
+        """Check if the fetched data contains actual email content."""
+        for item in data:
+            if (
+                isinstance(item, bytes)
+                and b"FETCH (" in item
+                and b"RFC822" not in item
+                and b"BODY" not in item
+            ):
+                # This is just metadata, not actual content
+                continue
+            elif isinstance(item, bytes | bytearray) and len(item) > 100:
+                # This looks like email content
+                return True
+        return False
+
+    def _extract_raw_email(self, data: list) -> bytes | None:
+        """Extract raw email bytes from IMAP response data."""
+        # The email content is typically at index 1 as a bytearray
+        if len(data) > 1 and isinstance(data[1], bytearray):
+            return bytes(data[1])
+        
+        # Search through all items for email content
+        for item in data:
+            if isinstance(item, bytes | bytearray) and len(item) > 100:
+                # Skip IMAP protocol responses
+                if isinstance(item, bytes) and b"FETCH" in item:
+                    continue
+                # This is likely the email content
+                return bytes(item) if isinstance(item, bytearray) else item
+        return None
+
+    async def _fetch_email_with_formats(self, imap, email_id: str) -> list | None:
+        """Try different fetch formats to get email data."""
+        fetch_formats = ["RFC822", "BODY[]", "BODY.PEEK[]", "(BODY.PEEK[])"]
+        
+        for fetch_format in fetch_formats:
+            try:
+                _, data = await imap.uid("fetch", email_id, fetch_format)
+                
+                if data and len(data) > 0 and self._check_email_content(data):
+                    return data
+                    
+            except Exception as e:
+                logger.debug(f"Fetch format {fetch_format} failed: {e}")
+                
+        return None
+
     async def get_email_body_by_id(self, email_id: str) -> dict[str, Any] | None:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -303,68 +351,22 @@ class EmailClient:
             await imap.select("INBOX")
 
             # Fetch the specific email by UID
-            data = None
-            fetch_formats = ["RFC822", "BODY[]", "BODY.PEEK[]", "(BODY.PEEK[])"]
-
-            for fetch_format in fetch_formats:
-                try:
-                    _, data = await imap.uid("fetch", email_id, fetch_format)
-
-                    if data and len(data) > 0:
-                        # Check if we got actual email content or just metadata
-                        has_content = False
-                        for item in data:
-                            if (
-                                isinstance(item, bytes)
-                                and b"FETCH (" in item
-                                and b"RFC822" not in item
-                                and b"BODY" not in item
-                            ):
-                                # This is just metadata, not actual content
-                                continue
-                            elif isinstance(item, bytes | bytearray) and len(item) > 100:
-                                # This looks like email content
-                                has_content = True
-                                break
-
-                        if has_content:
-                            break
-                        else:
-                            data = None  # Try next format
-
-                except Exception as e:
-                    logger.debug(f"Fetch format {fetch_format} failed: {e}")
-                    data = None
-
+            data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
                 logger.error(f"Failed to fetch UID {email_id} with any format")
                 return None
 
-            # Find the email data in the response
-            raw_email = None
-
-            # The email content is typically at index 1 as a bytearray
-            if len(data) > 1 and isinstance(data[1], bytearray):
-                raw_email = bytes(data[1])
-            else:
-                # Search through all items for email content
-                for item in data:
-                    if isinstance(item, bytes | bytearray) and len(item) > 100:
-                        # Skip IMAP protocol responses
-                        if isinstance(item, bytes) and b"FETCH" in item:
-                            continue
-                        # This is likely the email content
-                        raw_email = bytes(item) if isinstance(item, bytearray) else item
-                        break
-
-            if raw_email:
-                try:
-                    return self._parse_email_data(raw_email, email_id)
-                except Exception as e:
-                    logger.error(f"Error parsing email: {e!s}")
-                    return None
-            else:
+            # Extract raw email data
+            raw_email = self._extract_raw_email(data)
+            if not raw_email:
                 logger.error(f"Could not find email data in response for email ID: {email_id}")
+                return None
+
+            # Parse the email
+            try:
+                return self._parse_email_data(raw_email, email_id)
+            except Exception as e:
+                logger.error(f"Error parsing email: {e!s}")
                 return None
 
         finally:
