@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import datetime
 import os
 from pathlib import Path
 from typing import Any
 
 import tomli_w
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -36,29 +35,11 @@ class EmailServer(BaseModel):
 class AccountAttributes(BaseModel):
     account_name: str
     description: str = ""
-    created_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
-    updated_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
-
-    @model_validator(mode="after")
-    @classmethod
-    def update_updated_at(cls, obj: AccountAttributes) -> AccountAttributes:
-        """Update updated_at field."""
-        # must disable validation to avoid infinite loop
-        obj.model_config["validate_assignment"] = False
-
-        # update updated_at field
-        obj.updated_at = datetime.datetime.now()
-
-        # enable validation again
-        obj.model_config["validate_assignment"] = True
-        return obj
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, AccountAttributes):
             return NotImplemented
-        return self.model_dump(exclude={"created_at", "updated_at"}) == other.model_dump(
-            exclude={"created_at", "updated_at"}
-        )
+        return self.model_dump() == other.model_dump()
 
     def masked(self) -> AccountAttributes:
         return self.model_copy()
